@@ -31,7 +31,7 @@ jobs:
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: aurion-core
-          asset_name: aurion-core
+          file: aurion-proxy
+          asset_name: aurion-proxy
           tag: ${{ github.ref }}
           overwrite: true
