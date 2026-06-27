@@ -1,36 +1,36 @@
 package queue
 
 import (
-    "log"
-    "time"
+	"log"
+	"time"
 )
 
 func StartWorkers(n int) {
-    for i := 0; i < n; i++ {
-        go worker()
-    }
+	for i := 0; i < n; i++ {
+		go worker()
+	}
 }
 
 func worker() {
-    for job := range forwardQueue {
-        err := forwarderSMTP.Forward(job)
-        if err == nil {
-            continue
-        }
+	for job := range forwardQueue {
+		err := forwarderSMTP.Forward(job)
+		if err == nil {
+			continue
+		}
 
-        job.Attempt++
-        if job.Attempt > job.MaxRetry {
-            log.Printf("forward permanently failed for %s: %v", job.Ctx.IdentityEmail, err)
-            continue
-        }
+		job.Attempt++
+		if job.Attempt > job.MaxRetry {
+			log.Printf("forward permanently failed for %s: %v", job.Ctx.OriginalRcpts[0], err)
+			continue
+		}
 
-        delay := time.Duration(1<<job.Attempt) * time.Second
-        if delay > 30*time.Second {
-            delay = 30 * time.Second
-        }
+		delay := time.Duration(1<<job.Attempt) * time.Second
+		if delay > 30*time.Second {
+			delay = 30 * time.Second
+		}
 
-        time.AfterFunc(delay, func() {
-            forwardQueue <- job
-        })
-    }
+		time.AfterFunc(delay, func() {
+			forwardQueue <- job
+		})
+	}
 }
