@@ -1,7 +1,7 @@
 package routing
 
 type ResolveRequest struct {
-	Rcpt string `json:"rcpt"`
+	Email string `json:"email"`
 }
 
 type ResolveResponse struct {

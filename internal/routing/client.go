@@ -51,7 +51,7 @@ func (c *Client) Resolve(from string, rcpts []string) (*MessageContext, error) {
 }
 
 func (c *Client) callResolve(rcpt string) (*ResolveResponse, error) {
-	reqBody, err := json.Marshal(ResolveRequest{Rcpt: rcpt})
+	reqBody, err := json.Marshal(ResolveRequest{Email: rcpt})
 	if err != nil {
 		return nil, err
 	}
