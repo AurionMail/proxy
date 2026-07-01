@@ -3,12 +3,12 @@ package smtpserver
 import (
 	"bytes"
 	"io"
-	"io/ioutil"
 
 	"aurion/proxy/internal/config"
 	"aurion/proxy/internal/encryption"
 	"aurion/proxy/internal/queue"
 	"aurion/proxy/internal/routing"
+	"log"
 
 	"github.com/emersion/go-msgauth/dkim"
 	smtp "github.com/emersion/go-smtp"
@@ -47,11 +47,11 @@ func (s *Session) Rcpt(to string, opts *smtp.RcptOptions) error {
 }
 
 func (s *Session) Data(r io.Reader) error {
-	raw, err := ioutil.ReadAll(r)
+	raw, err := io.ReadAll(r)
 	if err != nil {
 		return err
 	}
-
+	log.Printf("[DEBUG] Check DKIM lving routing for From: %s, To: %v", s.from, s.rcpts)
 	// 1) Authentification minimale : DKIM
 	if err := s.verifyDKIM(raw); err != nil {
 		return &smtp.SMTPError{
@@ -62,8 +62,10 @@ func (s *Session) Data(r io.Reader) error {
 	}
 
 	// 2) Routing
+	log.Printf("[DEBUG] Resolving routing for From: %s, To: %v", s.from, s.rcpts)
 	ctx, err := s.routingClient.Resolve(s.from, s.rcpts)
 	if err != nil {
+		log.Printf("[ERROR] Routing resolution failed: %v", err) // Tu verras l'erreur exacte ici
 		return err
 	}
 

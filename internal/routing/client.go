@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 )
@@ -51,6 +52,7 @@ func (c *Client) Resolve(from string, rcpts []string) (*MessageContext, error) {
 }
 
 func (c *Client) callResolve(rcpt string) (*ResolveResponse, error) {
+	log.Printf("[DEBUG] Resolving routing for for recipient: %s", rcpt)
 	reqBody, err := json.Marshal(ResolveRequest{Email: rcpt})
 	if err != nil {
 		return nil, err
@@ -68,10 +70,11 @@ func (c *Client) callResolve(rcpt string) (*ResolveResponse, error) {
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		log.Printf("[DEBUG] Erreur 23: %v", err)
 		return nil, err
 	}
 	defer resp.Body.Close()
-
+	log.Printf("[DEBUG] reponse: %v", resp)
 	if resp.StatusCode >= 500 {
 		return nil, fmt.Errorf("routing: transient error %d", resp.StatusCode)
 	}
