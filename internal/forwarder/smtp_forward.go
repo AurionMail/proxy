@@ -19,22 +19,35 @@ func NewSMTPForwarder(addr string) *SMTPForwarder {
 func (f *SMTPForwarder) Forward(job *ForwardJob) error {
 	log.Printf("[DEBUG] Dialing upstream SMTP server at %s...", f.Addr)
 
-	// 1) Connexion réseau TCP avec un Timeout de 10 secondes
-	conn, err := net.DialTimeout("tcp", f.Addr, 10*time.Second)
+	log.Printf("[DEBUG] Dialing upstream SMTP server at %s...", f.Addr)
+
+	// 1) Connexion réseau TCP
+	conn, err := net.DialTimeout("tcp", f.Addr, 15*time.Second)
 	if err != nil {
-		log.Printf("[INFO] Timeout or error connecting to upstream SMTP server: %v", err)
+		log.Printf("[ERROR] Dial failed: %v", err)
 		return fmt.Errorf("forward: dial timeout: %w", err)
 	}
 
-	// 2) Initialisation du client SMTP Go sur la connexion TCP
+	log.Printf("[DEBUG] TCP Connection established, initializing SMTP client...")
+
+	// 2) Initialisation du client SMTP Go
 	host, _, _ := net.SplitHostPort(f.Addr)
+
+	// Définissons un timeout de lecture pour éviter le freeze si Stalwart reste muet
+	conn.SetDeadline(time.Now().Add(15 * time.Second))
+
 	c, err := smtp.NewClient(conn, host)
 	if err != nil {
 		conn.Close()
-		log.Printf("[ERROR] Timeout or error connecting to upstream SMTP server: %v", err)
+		log.Printf("[ERROR] SMTP client init failed: %v", err)
 		return fmt.Errorf("forward: smtp client init: %w", err)
 	}
+
+	// On retire le deadline pour le reste de la transaction
+	conn.SetDeadline(time.Time{})
 	defer c.Close()
+
+	log.Printf("[DEBUG] SMTP Handshake success, processing mail...")
 
 	// 3) Commande MAIL FROM
 	if err := c.Mail(job.Ctx.From); err != nil {
