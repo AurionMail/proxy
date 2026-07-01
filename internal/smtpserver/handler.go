@@ -86,11 +86,27 @@ func (s *Session) Data(r io.Reader) error {
 			return err
 		}
 
-		// Chiffrement global du corps (le résultat doit être au format ASCII-Armored)
-		encryptedPayload, err := encryption.Encrypt(ctx.PublicKeys, origBody)
+		// =========================================================================
+		// 🔒 FIX AURION : Préservation de l'arborescence MIME d'origine
+		// On encapsule le type et les paramètres de découpage (boundaries) d'origine
+		// à l'intérieur de la zone protégée qui va être chiffrée.
+		// =========================================================================
+		var bodyToEncryptBuf bytes.Buffer
+		if origCT := msg.Header.Get("Content-Type"); origCT != "" {
+			fmt.Fprintf(&bodyToEncryptBuf, "Content-Type: %s\r\n", origCT)
+		}
+		if origMime := msg.Header.Get("MIME-Version"); origMime != "" {
+			fmt.Fprintf(&bodyToEncryptBuf, "MIME-Version: %s\r\n", origMime)
+		}
+		bodyToEncryptBuf.WriteString("\r\n") // Ligne vide réglementaire délimitant l'en-tête du corps
+		bodyToEncryptBuf.Write(origBody)
+
+		// Chiffrement global de la structure complète reconstruite
+		encryptedPayload, err := encryption.Encrypt(ctx.PublicKeys, bodyToEncryptBuf.Bytes())
 		if err != nil {
 			return err
 		}
+		// =========================================================================
 
 		// Génération d'un boundary unique pour l'enveloppe PGP/MIME
 		var buf bytes.Buffer
@@ -107,7 +123,7 @@ func (s *Session) Data(r io.Reader) error {
 		}
 		p1.Write([]byte("Version: 1\r\n"))
 
-		// Écriture de la Partie 2 : Le bloc de données chiffré
+		// Écriture de la Partie 2 : Le bloc de données chiffré (.asc)
 		h2 := make(textproto.MIMEHeader)
 		h2.Set("Content-Type", "application/octet-stream; name=\"encrypted.asc\"")
 		h2.Set("Content-Description", "OpenPGP encrypted message")
@@ -121,23 +137,20 @@ func (s *Session) Data(r io.Reader) error {
 		// Fermeture du multipart pour insérer le boundary de fin
 		mw.Close()
 
-		// Reconstruction finale du message
-		// Reconstruction finale du message
+		// Reconstruction finale du message enveloppé pour Stalwart
 		var finalBuf bytes.Buffer
 
-		// On réécrit les en-têtes principaux d'origine en filtrant les anciens paramètres
+		// On réécrit les en-têtes principaux d'origine en filtrant les anciens paramètres sémantiques
 		for k, v := range msg.Header {
 			kl := strings.ToLower(k)
-			if kl == "content-type" || kl == "mime-version" || kl == "dkim-signature" {
+			if kl == "content-type" || kl == "mime-version" || kl == "dkim-signature" || kl == "content-transfer-encoding" {
 				continue
 			}
-			// CORRECTION ICI : Écriture directe et optimisée dans le buffer
 			fmt.Fprintf(&finalBuf, "%s: %s\r\n", k, strings.Join(v, ", "))
 		}
 
-		// Injection des nouveaux en-têtes requis pour le protocole PGP/MIME
+		// Injection des nouveaux en-têtes requis pour le protocole global PGP/MIME
 		finalBuf.WriteString("MIME-Version: 1.0\r\n")
-		// CORRECTION ICI AUSSI : Remplacement du WriteString(fmt.Sprintf(...))
 		fmt.Fprintf(&finalBuf, "Content-Type: multipart/encrypted; boundary=\"%s\"; protocol=\"application/pgp-encrypted\"\r\n", boundary)
 		finalBuf.WriteString("\r\n")
 
@@ -159,20 +172,15 @@ func (s *Session) Logout() error {
 	return nil
 }
 
-// --- DKIM uniquement pour l’instant ---
+// --- DKIM ---
 
 func (s *Session) verifyDKIM(raw []byte) error {
 	res, err := dkim.Verify(bytes.NewReader(raw))
 	if err != nil {
-		// Signature présente mais invalide = rejet
 		return err
 	}
-
 	if res == nil {
-		// Aucune signature DKIM = ok
 		return nil
 	}
-
-	// Signature présente valide = ok
 	return nil
 }
