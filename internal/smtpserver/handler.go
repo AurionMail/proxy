@@ -10,9 +10,9 @@ import (
 	"aurion/proxy/internal/queue"
 	"aurion/proxy/internal/routing"
 
-	"mime"
 	"mime/multipart"
 	"net/mail"
+	"net/textproto"
 	"strings"
 
 	"github.com/emersion/go-msgauth/dkim"
@@ -72,7 +72,7 @@ func (s *Session) Data(r io.Reader) error {
 		return err
 	}
 
-	// 3) Détection PGP + Chiffrement sélectif
+	// 3) Détection PGP + Chiffrement PGP/MIME Global
 	final := raw
 	if !encryption.IsPGPEncrypted(raw) {
 		msg, err := mail.ReadMessage(bytes.NewReader(raw))
@@ -80,86 +80,70 @@ func (s *Session) Data(r io.Reader) error {
 			return err
 		}
 
-		contentType := msg.Header.Get("Content-Type")
-		mediaType, params, _ := mime.ParseMediaType(contentType)
-
-		// CAS 1 : L'e-mail a des pièces jointes (Multipart)
-		if strings.HasPrefix(mediaType, "multipart/") {
-			mr := multipart.NewReader(msg.Body, params["boundary"])
-			var newBody bytes.Buffer
-			mw := multipart.NewWriter(&newBody)
-
-			// On copie le boundary d'origine pour ne pas casser les headers existants
-			mw.SetBoundary(params["boundary"])
-
-			for {
-				part, err := mr.NextPart()
-				if err == io.EOF {
-					break
-				}
-				if err != nil {
-					return err
-				}
-
-				// On lit les headers de cette partie
-				partContentType := part.Header.Get("Content-Type")
-				partMediaType, _, _ := mime.ParseMediaType(partContentType)
-
-				// Crée la nouvelle partie MIME avec les mêmes headers
-				partWriter, err := mw.CreatePart(part.Header)
-				if err != nil {
-					return err
-				}
-
-				partData, err := io.ReadAll(part)
-				if err != nil {
-					return err
-				}
-
-				// IMPORTANT : On ne chiffre QUE le texte.
-				// Les pièces jointes (application/*, image/*) restent intactes.
-				if strings.HasPrefix(partMediaType, "text/") {
-					encryptedText, err := encryption.Encrypt(ctx.PublicKeys, partData)
-					if err != nil {
-						return err
-					}
-					partWriter.Write(encryptedText)
-				} else {
-					// C'est une pièce jointe, on l'écrit telle quelle sans y toucher
-					partWriter.Write(partData)
-				}
-			}
-			mw.Close()
-
-			// On reconstruit l'e-mail complet (Headers principaux + Nouveau Corps Multipart)
-			var buf bytes.Buffer
-			for k, v := range msg.Header {
-				buf.WriteString(fmt.Sprintf("%s: %s\r\n", k, strings.Join(v, ", ")))
-			}
-			buf.WriteString("\r\n")
-			buf.Write(newBody.Bytes())
-			final = buf.Bytes()
-
-		} else {
-			// CAS 2 : Émail simple (uniquement du texte, pas de pièce jointe)
-			bodyData, err := io.ReadAll(msg.Body)
-			if err != nil {
-				return err
-			}
-
-			encryptedBody, err := encryption.Encrypt(ctx.PublicKeys, bodyData)
-			if err != nil {
-				return err
-			}
-
-			var buf bytes.Buffer
-			for k, v := range msg.Header {
-				buf.WriteString(fmt.Sprintf("%s: %s\r\n", k, strings.Join(v, ", ")))
-			}
-			buf.WriteString("\r\n")
-			buf.Write(encryptedBody)
-			final = buf.Bytes()
+		// Récupération du corps d'origine (contenant texte brut, HTML et/ou pièces jointes)
+		origBody, err := io.ReadAll(msg.Body)
+		if err != nil {
+			return err
 		}
+
+		// Chiffrement global du corps (le résultat doit être au format ASCII-Armored)
+		encryptedPayload, err := encryption.Encrypt(ctx.PublicKeys, origBody)
+		if err != nil {
+			return err
+		}
+
+		// Génération d'un boundary unique pour l'enveloppe PGP/MIME
+		var buf bytes.Buffer
+		mw := multipart.NewWriter(&buf)
+		boundary := mw.Boundary()
+
+		// Écriture de la Partie 1 : Déclaration PGP/MIME version identification
+		h1 := make(textproto.MIMEHeader)
+		h1.Set("Content-Type", "application/pgp-encrypted")
+		h1.Set("Content-Description", "PGP/MIME version identification")
+		p1, err := mw.CreatePart(h1)
+		if err != nil {
+			return err
+		}
+		p1.Write([]byte("Version: 1\r\n"))
+
+		// Écriture de la Partie 2 : Le bloc de données chiffré
+		h2 := make(textproto.MIMEHeader)
+		h2.Set("Content-Type", "application/octet-stream; name=\"encrypted.asc\"")
+		h2.Set("Content-Description", "OpenPGP encrypted message")
+		h2.Set("Content-Disposition", "inline; filename=\"encrypted.asc\"")
+		p2, err := mw.CreatePart(h2)
+		if err != nil {
+			return err
+		}
+		p2.Write(encryptedPayload)
+
+		// Fermeture du multipart pour insérer le boundary de fin
+		mw.Close()
+
+		// Reconstruction finale du message
+		// Reconstruction finale du message
+		var finalBuf bytes.Buffer
+
+		// On réécrit les en-têtes principaux d'origine en filtrant les anciens paramètres
+		for k, v := range msg.Header {
+			kl := strings.ToLower(k)
+			if kl == "content-type" || kl == "mime-version" || kl == "dkim-signature" {
+				continue
+			}
+			// CORRECTION ICI : Écriture directe et optimisée dans le buffer
+			fmt.Fprintf(&finalBuf, "%s: %s\r\n", k, strings.Join(v, ", "))
+		}
+
+		// Injection des nouveaux en-têtes requis pour le protocole PGP/MIME
+		finalBuf.WriteString("MIME-Version: 1.0\r\n")
+		// CORRECTION ICI AUSSI : Remplacement du WriteString(fmt.Sprintf(...))
+		fmt.Fprintf(&finalBuf, "Content-Type: multipart/encrypted; boundary=\"%s\"; protocol=\"application/pgp-encrypted\"\r\n", boundary)
+		finalBuf.WriteString("\r\n")
+
+		// Injection du corps enveloppé
+		finalBuf.Write(buf.Bytes())
+		final = finalBuf.Bytes()
 	}
 
 	// 4) Enqueue pour forwarding SMTP interne
