@@ -15,6 +15,7 @@ func worker() {
 	for job := range forwardQueue {
 		err := forwarderSMTP.Forward(job)
 		if err == nil {
+			log.Printf("forward succeeded for %s", job.Ctx.OriginalRcpts[0])
 			continue
 		}
 

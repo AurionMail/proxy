@@ -45,6 +45,6 @@ func (f *SMTPForwarder) Forward(job *ForwardJob) error {
 	if err := wc.Close(); err != nil {
 		return fmt.Errorf("forward: close: %w", err)
 	}
-
+	fmt.Printf("FORWARDED: From: %s, To: %v, Size: %d bytes\n", job.Ctx.From, job.Ctx.OriginalRcpts, len(job.Message))
 	return c.Quit()
 }
