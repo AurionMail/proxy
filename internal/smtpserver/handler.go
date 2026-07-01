@@ -2,13 +2,18 @@ package smtpserver
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 
 	"aurion/proxy/internal/config"
 	"aurion/proxy/internal/encryption"
 	"aurion/proxy/internal/queue"
 	"aurion/proxy/internal/routing"
-	"log"
+
+	"mime"
+	"mime/multipart"
+	"net/mail"
+	"strings"
 
 	"github.com/emersion/go-msgauth/dkim"
 	smtp "github.com/emersion/go-smtp"
@@ -51,7 +56,7 @@ func (s *Session) Data(r io.Reader) error {
 	if err != nil {
 		return err
 	}
-	log.Printf("[DEBUG] Check DKIM lving routing for From: %s, To: %v", s.from, s.rcpts)
+
 	// 1) Authentification minimale : DKIM
 	if err := s.verifyDKIM(raw); err != nil {
 		return &smtp.SMTPError{
@@ -62,20 +67,98 @@ func (s *Session) Data(r io.Reader) error {
 	}
 
 	// 2) Routing
-	log.Printf("[DEBUG] Resolving routing for From: %s, To: %v", s.from, s.rcpts)
 	ctx, err := s.routingClient.Resolve(s.from, s.rcpts)
 	if err != nil {
-		log.Printf("[ERROR] Routing resolution failed: %v", err) // Tu verras l'erreur exacte ici
 		return err
 	}
 
-	// 3) Détection PGP + chiffrement éventuel
+	// 3) Détection PGP + Chiffrement sélectif
 	final := raw
 	if !encryption.IsPGPEncrypted(raw) {
-		// MODIFICATION ICI : On passe la map ctx.PublicKeys au lieu de la string unique ctx.PublicKey
-		final, err = encryption.Encrypt(ctx.PublicKeys, raw)
+		msg, err := mail.ReadMessage(bytes.NewReader(raw))
 		if err != nil {
 			return err
+		}
+
+		contentType := msg.Header.Get("Content-Type")
+		mediaType, params, _ := mime.ParseMediaType(contentType)
+
+		// CAS 1 : L'e-mail a des pièces jointes (Multipart)
+		if strings.HasPrefix(mediaType, "multipart/") {
+			mr := multipart.NewReader(msg.Body, params["boundary"])
+			var newBody bytes.Buffer
+			mw := multipart.NewWriter(&newBody)
+
+			// On copie le boundary d'origine pour ne pas casser les headers existants
+			mw.SetBoundary(params["boundary"])
+
+			for {
+				part, err := mr.NextPart()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					return err
+				}
+
+				// On lit les headers de cette partie
+				partContentType := part.Header.Get("Content-Type")
+				partMediaType, _, _ := mime.ParseMediaType(partContentType)
+
+				// Crée la nouvelle partie MIME avec les mêmes headers
+				partWriter, err := mw.CreatePart(part.Header)
+				if err != nil {
+					return err
+				}
+
+				partData, err := io.ReadAll(part)
+				if err != nil {
+					return err
+				}
+
+				// IMPORTANT : On ne chiffre QUE le texte.
+				// Les pièces jointes (application/*, image/*) restent intactes.
+				if strings.HasPrefix(partMediaType, "text/") {
+					encryptedText, err := encryption.Encrypt(ctx.PublicKeys, partData)
+					if err != nil {
+						return err
+					}
+					partWriter.Write(encryptedText)
+				} else {
+					// C'est une pièce jointe, on l'écrit telle quelle sans y toucher
+					partWriter.Write(partData)
+				}
+			}
+			mw.Close()
+
+			// On reconstruit l'e-mail complet (Headers principaux + Nouveau Corps Multipart)
+			var buf bytes.Buffer
+			for k, v := range msg.Header {
+				buf.WriteString(fmt.Sprintf("%s: %s\r\n", k, strings.Join(v, ", ")))
+			}
+			buf.WriteString("\r\n")
+			buf.Write(newBody.Bytes())
+			final = buf.Bytes()
+
+		} else {
+			// CAS 2 : Émail simple (uniquement du texte, pas de pièce jointe)
+			bodyData, err := io.ReadAll(msg.Body)
+			if err != nil {
+				return err
+			}
+
+			encryptedBody, err := encryption.Encrypt(ctx.PublicKeys, bodyData)
+			if err != nil {
+				return err
+			}
+
+			var buf bytes.Buffer
+			for k, v := range msg.Header {
+				buf.WriteString(fmt.Sprintf("%s: %s\r\n", k, strings.Join(v, ", ")))
+			}
+			buf.WriteString("\r\n")
+			buf.Write(encryptedBody)
+			final = buf.Bytes()
 		}
 	}
 
