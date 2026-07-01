@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"log"
 
-	"golang.org/x/crypto/openpgp"
+	"github.com/ProtonMail/go-crypto/openpgp"
 )
 
 // Encrypt chiffre le message avec la clé publique PGP (format ASCII-armored ou binaire).
