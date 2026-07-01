@@ -3,6 +3,7 @@ package encryption
 import (
 	"bytes"
 	"fmt"
+	"log"
 
 	"golang.org/x/crypto/openpgp"
 )
@@ -10,6 +11,7 @@ import (
 // Encrypt chiffre le message avec la clé publique PGP (format ASCII-armored ou binaire).
 // v1: implémentation simple, sans gestion avancée des préférences.
 func Encrypt(pubKeys map[string]string, raw []byte) ([]byte, error) {
+	log.Printf("[DEBUG] Encrypting message for recipients: %v", pubKeys)
 	var combinedKeys openpgp.EntityList
 
 	for _, armoredKey := range pubKeys {
@@ -43,18 +45,23 @@ func Encrypt(pubKeys map[string]string, raw []byte) ([]byte, error) {
 }
 
 func readPubKey(armored string) (openpgp.EntityList, error) {
+	log.Printf("[DEBUG] Reading public key: %s", armored)
 	r := bytes.NewBufferString(armored)
 
 	// On tente d'abord ASCII-armored, puis binaire.
 	el, err := openpgp.ReadArmoredKeyRing(r)
 	if err == nil {
 		return el, nil
+	} else {
+		log.Printf("[DEBUG] Reading public key ERROR: %s", err)
 	}
 
 	r2 := bytes.NewBufferString(armored)
 	el, err = openpgp.ReadKeyRing(r2)
 	if err != nil {
 		return nil, err
+	} else {
+		log.Printf("[DEBUG] Reading public key ERROR 2: %s", err)
 	}
 	return el, nil
 }

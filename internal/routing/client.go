@@ -74,7 +74,7 @@ func (c *Client) callResolve(rcpt string) (*ResolveResponse, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	log.Printf("[DEBUG] reponse: %v", resp)
+	log.Printf("[DEBUG] reponse de l'URL %s: %v", url, resp)
 	if resp.StatusCode >= 500 {
 		return nil, fmt.Errorf("routing: transient error %d", resp.StatusCode)
 	}
